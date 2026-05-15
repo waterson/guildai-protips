@@ -1,0 +1,43 @@
+#+title: Import the text, Luke
+
+Don't embed long prompts as strings in your code — import them as files instead.
+
+#+begin_src typescript
+  // agents.ts
+  import { llmAgent } from "@guildai/agents-sdk"
+  import systemPrompt from "./system-prompt.md"
+
+  export default llmAgent({
+    description: "My cool agent",
+    systemPrompt,
+    tools: { /* some tools */ },
+  })
+#+end_src
+
+Then write your prompt in a standalone =system-prompt.md=:
+
+#+begin_src markdown
+  <!-- system-prompt.md -->
+  You are a helpful assistant that...
+
+  [...1000 lines elided...]
+
+  Good luck!
+#+end_src
+
+* Why
+
+Your editor treats =.md= files as first-class citizens: syntax highlighting,
+preview, spell-check. Long prompt strings buried in TypeScript get none of that,
+and they make the surrounding logic harder to read.
+
+As a bonus, you can use a templating library like [[https://mustache.github.io/][Mustache]] to inject values
+into your prompt at runtime — something that's awkward to do with raw template
+literals in code.
+
+#+HTML_HEAD: <link rel="stylesheet" href="protips.css">
+#+HTML_HEAD: <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil

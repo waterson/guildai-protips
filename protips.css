@@ -1,0 +1,33 @@
+@import url("https://cdn.jsdelivr.net/gh/vsalvino/computer-modern@main/fonts/bright.css");
+@import url("https://cdn.jsdelivr.net/gh/vsalvino/computer-modern@main/fonts/sans.css");
+@import url("https://cdn.jsdelivr.net/gh/vsalvino/computer-modern@main/fonts/serif.css");
+@import url("https://cdn.jsdelivr.net/gh/vsalvino/computer-modern@main/fonts/typewriter.css");
+
+:root {
+    font-family: "Computer Modern Serif", "Georgia", serif;
+}
+
+code, pre {
+    font-family: "Computer Modern Typewriter", monospace;
+}
+
+code {
+    color: #080;
+}
+
+.title {
+    display: none
+}
+
+h2 {
+    font-family: "Computer Modern Bright", sans-serif;
+    font-size: 100%;
+    font-weight: bold;
+}
+
+pre.src {
+    color: #ccc;
+    background-color: #444;
+    font-size: smaller;
+    font-family: "Rec Mono Casual", "Computer Modern Typewriter", monospace;
+}

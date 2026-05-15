@@ -1,0 +1,144 @@
+#+title: Using the Coding Agent
+
+The coding agent runs your instructions inside an isolated container. Use it
+when you need an agent that can read and write files, run shell commands, or
+work with a cloned repository.
+
+#+begin_src typescript
+  import { ExperimentalCodingTools as codingTools } from "@guildai-services/guildai~experimental-coding"
+  import { type Task, agent } from "@guildai/agents-sdk"
+  import { CONTAINER_IMAGE } from "@guildai/guildai~sys-experimental-coding"
+  import codingAgentTool from "@guildai/guildai~sys-experimental-coding/tool"
+
+  const tools = { ...codingTools, communicate: codingAgentTool }
+  type Tools = typeof tools
+
+  async function run(input: Input, task: Task<Tools>): Promise<Output> {
+    const { container_id } = await task.tools.experimental_coding_create({ image: CONTAINER_IMAGE })
+    try {
+      const { text } = await task.tools.communicate({
+        container_id,
+        message: "What files are in the current directory?",
+      })
+      return { type: "text", text }
+    } finally {
+      await task.tools.experimental_coding_delete({ container_id })
+    }
+  }
+#+end_src
+
+* Container lifecycle
+
+You own the container. Create it before you need it, and always clean up in a
+=finally= block so you don't leave containers running if your agent throws.
+
+#+begin_src typescript
+  const { container_id } = await task.tools.experimental_coding_create({ image: CONTAINER_IMAGE })
+  try {
+    // ... do work ...
+  } finally {
+    await task.tools.experimental_coding_delete({ container_id })
+  }
+#+end_src
+
+* Giving the coding agent a system prompt
+
+Pass a =system_prompt= to =communicate= to shape how the coding agent behaves.
+Keep it in a separate =.md= file (see the [[file:external-prompts.org][external prompts tip]]).
+
+#+begin_src typescript
+  import systemPrompt from "./system-prompt.md"
+
+  const { text } = await task.tools.communicate({
+    container_id,
+    system_prompt: systemPrompt,
+    message,
+  })
+#+end_src
+
+* Giving the coding agent tools
+
+The container is sandboxed — it can't reach external services on its own. Pass
+tools explicitly using =codingAgentToolsFrom=:
+
+#+begin_src typescript
+  import { pick } from "@guildai/agents-sdk"
+  import { gitHubTools } from "@guildai-services/guildai~github"
+  import { codingAgentToolsFrom } from "@guildai/guildai~sys-experimental-coding"
+
+  const { text } = await task.tools.communicate({
+    container_id,
+    message,
+    tools: codingAgentToolsFrom({
+      ...pick(gitHubTools, [
+        "github_issues_create",
+        "github_pulls_create",
+        // ...
+      ]),
+    }),
+  })
+#+end_src
+
+Only pass the tools the coding agent actually needs for the task at hand.
+
+** GitHub tools reference
+
+Interacting with GitHub from inside the container requires specific tool
+combinations. Here's what you need for common tasks:
+
+| Task                       | Required Tools                          |
+|----------------------------+-----------------------------------------|
+| Clone a repository         | =github_repos_download_zipball_archive= |
+|----------------------------+-----------------------------------------|
+| Compute a diff on a branch | =github_pulls_list_files=               |
+|----------------------------+-----------------------------------------|
+| Create a branch            | =github_git_get_ref=                    |
+|                            | =github_git_create_ref=                 |
+|----------------------------+-----------------------------------------|
+| Create a commit            | =github_git_get_ref=                    |
+|                            | =github_git_get_commit=                 |
+|                            | =github_git_create_blob=                |
+|                            | =github_git_create_tree=                |
+|                            | =github_git_create_commit=              |
+|                            | =github_git_update_ref=                 |
+|----------------------------+-----------------------------------------|
+| Create a PR                | =github_pulls_create=                   |
+|----------------------------+-----------------------------------------|
+| Create an issue            | =github_issues_create=                  |
+|----------------------------+-----------------------------------------|
+| Comment on an issue or PR  | =github_issues_create_comment=          |
+
+* Multi-turn conversations
+
+By default, each =communicate= call starts a fresh session. To continue a
+conversation across multiple calls — for example, a setup step followed by a
+main task — capture the =session_id= from the first response and pass it back:
+
+#+begin_src typescript
+  import Mustache from "mustache"
+
+  // Step 1: set up the environment
+  const { text: setupResult, session_id } = await task.tools.communicate({
+    container_id,
+    message: Mustache.render(setupTemplate, { owner, repo, pull_number }),
+    tools: codingAgentToolsFrom({ ...pick(gitHubTools, ["github_repos_download_zipball_archive"]) }),
+  })
+
+  // Step 2: do the actual work, continuing the same session
+  const { text } = await task.tools.communicate({
+    container_id,
+    session_id,
+    message: Mustache.render(instructionsTemplate, { owner, repo, pull_number }),
+    tools: codingAgentToolsFrom({ ...pick(gitHubTools, ["github_pulls_list_files"]) }),
+  })
+#+end_src
+
+Using =session_id= preserves the container's working directory, environment
+variables, and conversation history between calls.
+
+#+HTML_HEAD: <link rel="stylesheet" href="protips.css">
+#+HTML_HEAD: <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil

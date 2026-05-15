@@ -1,0 +1,53 @@
+#+title: Test Faster with a Pre-Built Bundle
+
+Want to test faster? Pass =--bundle= to =guild agent test= to skip server-side compilation entirely.
+
+#+begin_src bash
+  npm run bundle
+  guild agent test --bundle agent.js.gz --mode json <<-EOF
+  { "type": "text", "text": "this is my agent input" }
+  EOF
+#+end_src
+
+If you're starting from a new agent template, this is all you need to do: the
+necessary build steps and dependencies are baked-in.
+
+But if you've got an older agent, there are some quick things you'll need to
+update:
+
+Firrst, add =esbuild= as a dev dependency.
+
+#+begin_src bash
+  npm install --save-dev esbuild
+#+end_src
+
+Then add a =bundle= script to your agent's =package.json= that compiles,
+bundles, and encodes the output.
+
+#+begin_src json
+  "scripts": {
+    "build": "npm run build:compile && npm run build:transform && npm run build:copy",
+    "build:compile": "tsc --build",
+    "build:transform": "babel ./dist/agent.js --out-dir ./dist --out-file-extension .compiled.js --plugins @guildai/babel-plugin-agent-compiler",
+    "build:copy": "cp *.md dist/",
+    "bundle": "npm run build && esbuild dist/agent.compiled.js --bundle --loader:.md=text --platform=node --format=esm --external:zod --external:@guildai/agents-sdk | gzip | base64 > agent.js.gz"
+  }
+#+end_src
+
+⚠️ Important! You need to make sure that your =build= step still produces the same
+artifacts that it did before; the =bundle= step should be separate and work
+/after/ the build!
+
+* Why
+
+Normally, =guild agent test= uploads your source and the server must compile it.
+With =--bundle=, you push a ready-to-test artifact that skips the =npm install=
+and =npm build= steps.
+
+
+#+HTML_HEAD: <link rel="stylesheet" href="protips.css">
+#+HTML_HEAD: <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil

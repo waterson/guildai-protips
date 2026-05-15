@@ -1,0 +1,74 @@
+#+title: Calling an Agent as a Tool
+
+An agent has a defined input type and output type -- which is exactly the
+interface a tool needs to satisfy. An agent's =/tool= sub-package exposes that
+interface directly, allowing you to call any Guild agent just like any other
+tool.
+
+To use another agent as a tool, add the agent as a dependency in you agent's
+=package.json=:
+
+#+begin_src json
+  "@guildai/waterson~subagent": "^1.0.0"
+#+end_src
+
+Then import from its =/tool= sub-package and include it in your agent's =tools=
+object.
+
+#+begin_src typescript
+  import subagentTool from "@guildai/waterson~subagent/tool"
+
+  const tools = {
+    subagent: subagentTool,
+  }
+#+end_src
+
+Now you can call it just like any other tool...
+
+/From an llmAgent.../
+
+#+begin_src typescript
+  export default llmAgent({
+    description: "my cool agent",
+    tools: {
+      subagent: subagentTool,
+    }
+  })
+#+end_src
+
+/From a TypeScript agent with automatically-managed state.../
+
+#+begin_src typescript
+  const result = await task.tools.subagent({ type: "text", text: "sudo make me a sandwich" })
+#+end_src
+
+/From a TypeScript agent with self-managed state.../
+
+#+begin_src typescript
+  // In your agent's start or onToolResults handler...
+  return callTools([{
+    type: "tool-call",
+    toolName: "subagent",
+    toolCallId: "subagent-1",
+    input: { type: "text", text: "sudo make me a sandwich" }
+  }])
+
+  // ...and then receive a TypedToolResult in your onToolResults handler
+  // with the agent's output type.
+  async onToolResults(results: Array<TypedToolResult<Tools> | TypedToolError<Tools>>, task: Task<Tools, State>) {
+    const res = results.find((r) => r.type === "tool-result" && r.toolName === "subagent")
+    if (res) {
+      const { output } = res as TypedToolResult<Tools["subagent"]>
+      ...
+    }
+    ...
+  }
+#+end_src
+
+
+#+HTML_HEAD: <link rel="stylesheet" href="protips.css">
+#+HTML_HEAD: <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil

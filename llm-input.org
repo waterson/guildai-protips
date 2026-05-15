@@ -1,0 +1,54 @@
+#+title: Structured input for llmAgent
+
+Use =inputSchema= and =inputTemplate= to control what your =llmAgent= accepts as input.
+
+#+begin_src typescript
+  const inputSchema = z.object({
+    action: z.literal("labeled"),
+    label: z.object({ name: z.string() }),
+    issue: z.object({ number: z.number() }),
+    repository: z.object({
+      owner: z.object({ login: z.string() }),
+      name: z.string(),
+    }),
+  })
+
+  const inputTemplate = `
+  Issue #{{issue.number}} in {{repository.owner.login}}/{{repository.name}} has
+  just been assigned the "{{label.name}}" label. Should we care?`
+
+  export default llmAgent({
+    description,
+    systemPrompt,
+    tools,
+    inputSchema,
+    inputTemplate,
+  })
+#+end_src
+
+The example above handles a GitHub webhook. =inputSchema= is a =zod= schema
+describing the fields you care about — you don't need to model the whole
+payload, just the parts you'll use. =inputTemplate= is a mustache-style string
+that formats those fields into the first user message the LLM sees.
+
+* Why bother?
+
+By default, an LLM agent expects text: ={ type: "text", text: string }=. That's
+fine when a human is typing, but awkward when another agent or a webhook is
+calling yours.
+
+Without =inputSchema= and =inputTemplate=, you end up begging callers in your
+agent's description to format their input a certain way — and then hoping the
+LLM can figure out what they actually sent. With a webhook, you don't even get
+that: the entire raw JSON blob gets splatted in and you're at the mercy of the
+model to interpret it correctly.
+
+Defining =inputSchema= makes your agent a first-class tool: callers know exactly
+what to provide, and the input arrives structured and ready to use.
+
+#+HTML_HEAD: <link rel="stylesheet" href="protips.css">
+#+HTML_HEAD: <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil

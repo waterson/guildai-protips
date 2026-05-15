@@ -1,0 +1,144 @@
+#+title: Structure Your Input (and Output)
+
+Define =inputSchema= and =outputSchema= so a caller knows exactly what input
+your agent needs -- and what output the caller will get back.
+
+#+begin_src typescript
+  import { agent } from "@guildai/agents-sdk"
+  import { z } from "zod"
+
+  const inputSchema = z.object({
+    to:      z.string().email().describe("Recipient email address"),
+    subject: z.string().describe("Email subject line"),
+    body:    z.string().describe("Email body text"),
+  })
+
+  const outputSchema = z.object({
+    messageId: z.string().describe("The sent message's ID"),
+  })
+
+  export default agent({
+    description: "Sends an email.",
+    inputSchema,
+    outputSchema,
+    tools: {},
+    start: async ({ to, subject, body }) => {
+      const { id } = await sendEmail({ to, subject, body })
+      return output({ messageId: id })
+    },
+  })
+#+end_src
+
+* The problem with parsing text
+
+Real code in the wild, I promise:
+
+#+begin_src typescript
+  // Please don't do this.
+  start: async (input) => {
+    const to      = input.text.match(/TO:\s*(.+)/)?.[1]
+    const subject = input.text.match(/SUBJECT:\s*(.+)/)?.[1]
+    const body    = input.text.match(/BODY:\s*([\s\S]+)/)?.[1]
+    if (!to || !subject || !body) throw new Error("missing required fields")
+    ...
+  }
+#+end_src
+
+This puts the burden on the /caller/ to format text correctly and on the agent
+to parse it correctly. Both sides can fail silently: a caller might omit a field
+and only find out when the agent crashes at runtime; the agent might silently
+match the wrong thing if the format is off by a character.
+
+Using =inputSchema= eliminates both failure modes. The Guild runtime validates
+input against the schema before =start= ever fires. If a required field is
+missing or the wrong type, the task fails cleanly before your code runs.
+
+* A quick zod cheat-sheet
+
+While the =outputSchema= can be any Zod type, the =inputSchema= requires you to
+provide a =z.object= to be compatible with LLM tool calling conventions:
+
+#+begin_src typescript
+  z.object({
+    name:     z.string(),
+    count:    z.number().int().positive(),
+    flag:     z.boolean().optional(),
+    priority: z.enum(["low", "medium", "high"]),
+    tags:     z.array(z.string()),
+    nested:   z.object({ id: z.number() }),
+  })
+#+end_src
+
+Chain =.describe("…")= on any field to document it — that description shows up
+in the JSON schema exposed to callers, so write it as if you're writing a tool
+parameter description (because you are).
+
+#+begin_src typescript
+  z.object({
+    to: z.string().email().describe("Recipient address; must be a valid RFC 5321 address"),
+  })
+#+end_src
+
+If your agent doesn't take any parameters at all, pass an empty Zod object:
+
+#+begin_src typescript
+  z.object({})
+#+end_src
+
+* outputSchema matters too
+
+Defining =outputSchema= is just as important as =inputSchema=. This provides a
+caller with the contract for what they'll receive.
+
+#+begin_src typescript
+  const outputSchema = z.object({
+    messageId: z.string(),
+    timestamp: z.string().datetime(),
+  })
+
+  // Compiler error if you forget a field or use the wrong type.
+  return output({ messageId: id, timestamp: new Date().toISOString() })
+#+end_src
+
+As a special case, note that an =llmAgent= currently has an output schema of:
+
+#+begin_src typescript
+  const outputSchema = z.object({
+    type: z.literal("text"),
+    text: z.string().describe("The output text")
+  })
+#+end_src
+
+We plan to provide facilities for non-text content and structured output in the
+future.
+
+* Your agent is a tool
+
+Because an agent's schema is identical to a tool's schema, any Guild agent can
+be used as a tool by another agent — and the =inputSchema= you define becomes
+the tool's parameter schema. A caller agent (or a human reading the docs) sees
+exactly what fields to provide, with descriptions, types, and constraints.
+
+If you accept raw text and parse it with regex, a caller agent has to /guess/
+the format from your description and hope for the best. With a structured
+schema, the format is unambiguous and machine-readable.
+
+See [[file:calling-an-agent-as-a-tool.org][Calling an Agent as a Tool]] for how to wire up an agent as a tool in
+another agent.
+
+* More on LLM agents
+
+An =llmAgent= defaults to accepting ={ type: "text", text: string }= — which is
+fine when a human is typing. But if your LLM agent is called by another agent or
+a webhook, define =inputSchema= and =inputTemplate= to accept structured input
+and render it into the first user message automatically.
+
+See [[file:llm-input.org][Structured input for llmAgent]] for details.
+
+
+#+HTML_HEAD: <link rel="stylesheet" href="protips.css">
+#+HTML_HEAD: <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil
