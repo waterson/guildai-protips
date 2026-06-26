@@ -1,0 +1,420 @@
+# -*- mode: org; fill-column: 80 -*-
+#+title: Tutorial: A Telegram Agent in Guild
+#+subtitle: From @BotFather to a bot that talks back
+
+This is a hands-on walkthrough for wiring a Guild agent up to Telegram. By the
+end you will have a bot that a human can message and that messages them back --
+which exercises both halves of the integration: /receiving/ a message (the
+webhook trigger hands the inbound update to your agent) and /sending/ one (the
+=telegram_send_message= tool).
+
+The work splits cleanly in two, and we do them in that order:
+
+1. *Telegram side* -- create a bot with =@BotFather=, grab its token, and send
+   it a first message.
+2. *Guild side* -- connect that token to the =guildai~telegram= integration,
+   write a small agent against the generated tools, and (optionally) enable a
+   webhook trigger so inbound messages fire the agent.
+
+If you only want a /notify-me/ agent -- one that pings you when some event
+fires and never listens for replies -- you can stop after the send half; see
+[[*The send-only shortcut: a notify-me agent]] at the end.
+
+* What you'll build
+
+A tiny "echo" bot. When you message it, Telegram delivers the message to your
+agent as an =Update=, the agent reads who sent it and what they said, and
+replies =Hi <name>, you said <text>=. It is deliberately trivial -- the point
+is the plumbing, not the cleverness.
+
+* The one rule to internalise first
+
+*A Telegram bot cannot start a conversation.* It can only send to a chat
+/after/ a human has messaged it first (tapped =/start= or sent any message), or
+after it has been added to a group. There is no API to "open" a chat with an
+arbitrary user -- the =chat_id= simply does not exist until the human reaches
+out.
+
+Everything below is shaped by this rule. The natural first move is always
+/receive, then send/ -- never send blind. Sending to a =chat_id= that has never
+contacted the bot fails with =403 Forbidden: bot can't initiate conversation
+with a user=.
+
+* Part 1 -- the Telegram side
+
+** Create the bot with =@BotFather=
+
+=@BotFather= is Telegram's own bot for managing bots. In any Telegram client:
+
+1. Search for =@BotFather= and open a chat with it.
+2. Send =/newbot=.
+3. Give it a *display name* (free-form, e.g. "Waterson Notifier").
+4. Give it a *username* -- must be unique and end in =bot= (e.g.
+   =waterson_guildbot=). This is the handle humans use to find it:
+   =t.me/waterson_guildbot=.
+
+=@BotFather= replies with the bot's *token*:
+
+#+begin_src
+123456789:AAEAa06hTcQ3Vt0n0862xRJqFangYsFR_IY
+#+end_src
+
+The numeric prefix is the bot id; the whole string is a *secret* that grants
+full control of the bot. Treat it like a password -- it is what you will hand to
+Guild in Part 2, and Guild stores it encrypted. You can revoke and reissue it
+from =@BotFather= (=/revoke=) at any time.
+
+** Message your bot
+
+Open =t.me/<your_bot_username>= and tap *Start* (or just send it any message
+like =ping=). This is the mandatory initiation step from
+[[*The one rule to internalise first]] -- without it, nothing your agent sends
+will be delivered.
+
+** (Optional) Sanity-check the token and find your =chat_id=
+
+You can poke the raw API with =curl= before involving Guild at all. =getMe=
+confirms the token works and reports the bot's =@username=:
+
+#+begin_src sh
+curl -s "https://api.telegram.org/bot<TOKEN>/getMe"
+#+end_src
+
+=getUpdates= shows you the messages humans have sent the bot -- and, crucially,
+the =chat_id= you would reply to:
+
+#+begin_src sh
+curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates"
+#+end_src
+
+#+begin_src json
+{
+  "ok": true,
+  "result": [
+    {
+      "update_id": 462982898,
+      "message": {
+        "message_id": 3,
+        "from": { "id": 8965391528, "first_name": "Chris", ... },
+        "chat": { "id": 8965391528, "first_name": "Chris", "type": "private" },
+        "date": 1782156479,
+        "text": "ping"
+      }
+    }
+  ]
+}
+#+end_src
+
+For a 1:1 chat the =chat_id= equals your own numeric Telegram user id, so
+=message.from.id= and =message.chat.id= are identical (=8965391528= above).
+Group chats use a distinct /negative/ id; a channel can also be addressed by its
+=@channelusername= string.
+
+Telegram's official clients do not show numeric chat ids anywhere in the UI, so
+this =getUpdates= call (or a helper bot like =@userinfobot=) is the
+lowest-friction way to learn yours. Inside Guild you don't have to use =curl= --
+the =telegram_get_updates= tool exposes the same thing -- but for a first
+sanity-check =curl= is fine.
+
+* Part 2 -- the Guild side
+
+** The integration is already seeded
+
+The =telegram= integration ships with Guild, owned by =guildai=. You do *not*
+create it; you only connect /your/ bot token to it. Confirm it's there:
+
+#+begin_src sh
+guild integration get guildai~telegram
+#+end_src
+
+It exposes three tools to agents:
+
+| Tool                    | Method        | Use                                            |
+|-------------------------+---------------+------------------------------------------------|
+| =telegram_send_message= | =sendMessage= | Post text to a chat.                           |
+| =telegram_get_me=       | =getMe=       | "Who am I?" -- the bot's own id and =@username=.|
+| =telegram_get_updates=  | =getUpdates=  | Discover chats that have messaged the bot.     |
+
+** Connect your bot token
+
+This is the one step that binds /your/ bot to Guild. The token is stored
+encrypted, per-install:
+
+#+begin_src sh
+guild integration connect guildai~telegram --owner <your-account> --token <bot-token>
+#+end_src
+
+- =guildai~telegram= is =owner~name= -- the integration's name, not yours.
+- =--owner= is the account that should /own the credential/ -- your own username
+  or an org you belong to. One bot = one token = one credential.
+
+That's the whole connection. There's no OAuth dance and no header config -- the
+bot token rides in the URL path and Guild's custom Telegram handler injects it
+for you, keeping it out of logs.
+
+* Part 3 -- write the agent
+
+** Scaffold the project
+
+#+begin_src sh
+guild agent init --name telegram-hello --template BLANK --owner <your-account>
+cd telegram-hello
+#+end_src
+
+The Telegram tools come from a /service/ package, not the core SDK, so add it
+as a dependency alongside =@guildai/agents-sdk=. Your =package.json=
+=dependencies= should include:
+
+#+begin_src json
+"dependencies": {
+  "@guildai-services/guildai~telegram": "^1.0.1",
+  "@guildai/agents-sdk": "*",
+  "zod": "^4.3.0"
+}
+#+end_src
+
+Both =@guildai= and =@guildai-services= scopes resolve from the local Guild
+registry. Make sure your =.npmrc= points at it:
+
+#+begin_src
+@guildai:registry=http://localhost:5001/npm/
+@guildai-services:registry=http://localhost:5001/npm/
+#+end_src
+
+Then install:
+
+#+begin_src sh
+npm install
+#+end_src
+
+** The agent
+
+Here is the whole agent. It takes an inbound =Update= as its input (that's the
+/receive/ side -- the webhook trigger in Part 4 supplies this shape), reads the
+sender and text, and calls =telegram_send_message= to reply (the /send/ side).
+
+#+begin_src typescript
+"use agent";
+
+import { type Task, agent, consoleTools, pick } from "@guildai/agents-sdk";
+import { TelegramTools } from "@guildai-services/guildai~telegram";
+import { z } from "zod";
+
+const description = `
+Replies to an inbound Telegram message via the connected bot.
+
+Receives a Telegram Update (the message a human sent the bot), reads who sent it
+and what they said, and posts a reply back to the same chat using the
+guildai~telegram integration. A minimal end-to-end smoke test of receive + send.
+`;
+
+const inputSchema = z.object({
+  update_id: z.number().describe("The update ID"),
+  message: z.object({
+    chat: z.object({
+      id: z
+        .union([z.string(), z.number()])
+        .describe(
+          "Target chat: a numeric chat id, or a channel username in the form @channelusername.",
+        ),
+      first_name: z
+        .string()
+        .describe("The first name of the user with whom you're chatting")
+        .optional(),
+      last_name: z
+        .string()
+        .describe("The last name of the user with whom you're chatting")
+        .optional(),
+    }),
+    text: z.string().describe("The message text the human sent (1-4096 characters)."),
+  }),
+});
+
+type Input = z.infer<typeof inputSchema>;
+
+const outputSchema = z.object({
+  type: z.literal("text"),
+  text: z.string().describe("Human-readable confirmation of what was sent."),
+});
+
+type Output = z.infer<typeof outputSchema>;
+
+const tools = {
+  ...pick(TelegramTools, ["telegram_send_message"]),
+  ...consoleTools,
+};
+
+type Tools = typeof tools;
+
+async function run({ message }: Input, task: Task<Tools>): Promise<Output> {
+  const { chat, text } = message;
+  const { id: chat_id, first_name } = chat;
+  await task.console.log(`Sending Telegram message to chat ${chat_id}`);
+
+  const response = await task.tools.telegram_send_message({
+    body: { chat_id, text: `Hi ${first_name}, you said ${text}` },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegram reported a failure sending to chat ${chat_id}`);
+  }
+
+  const messageId = response.result?.message_id;
+  return {
+    type: "text",
+    text:
+      `Sent message to chat ${chat_id}` +
+      (messageId !== undefined ? ` (message_id ${messageId}).` : "."),
+  };
+}
+
+export default agent({
+  description,
+  inputSchema,
+  outputSchema,
+  tools,
+  run,
+});
+#+end_src
+
+A few things worth calling out:
+
+- *=pick(TelegramTools, [...])=* selects just the tools you want. Here we only
+  need =telegram_send_message=; an agent that discovers its own chats would also
+  =pick= =telegram_get_updates= / =telegram_get_me=.
+- *Tools are called via =task.tools.<name>=* -- =task.tools.telegram_send_message=,
+  not any of the older =task.guild.*= / =task.env.*= accessors.
+- *Always check =response.ok=.* Telegram wraps every reply in
+  ={ ok, result }= on success and ={ ok: false, error_code, description }= on
+  failure. The =403= initiation error shows up here -- surface it rather than
+  swallowing it, and tell the user to message the bot first.
+
+** Test it interactively
+
+You don't need a live webhook to exercise the agent -- feed it an =Update=
+directly in the test REPL. Use the =chat_id= you found in Part 1:
+
+#+begin_src sh
+guild agent test
+#+end_src
+
+When prompted for input, hand it an =Update= shaped like the schema:
+
+#+begin_src json
+{
+  "update_id": 1,
+  "message": {
+    "chat": { "id": 8965391528, "first_name": "Chris", "type": "private" },
+    "text": "ping"
+  }
+}
+#+end_src
+
+If everything is wired up, your Telegram client pings with =Hi Chris, you said
+ping= and the agent returns its confirmation. If you instead get a =403=, you
+skipped [[*Message your bot]].
+
+** Save a version
+
+When you're happy:
+
+#+begin_src sh
+guild agent save --all -m "telegram echo agent"
+#+end_src
+
+* Part 4 -- receive automatically via a webhook trigger
+
+So far you've fed updates to the agent by hand. To have /Telegram/ push inbound
+messages to your agent the moment they arrive, enable a *webhook trigger* on the
+=telegram= integration in a workspace. Enabling the first trigger registers a
+webhook with Telegram (=setWebhook=); from then on each message your bot
+receives fires the agent with the =Update= as input -- exactly the shape the
+agent above already expects.
+
+Two things to know:
+
+- *Webhook and polling are mutually exclusive.* Once a webhook is registered,
+  =telegram_get_updates= starts returning an error. Disabling the last trigger
+  (=deleteWebhook=) restores polling. So pick one: discovery via =getUpdates=
+  during setup, or automatic delivery via the webhook in production.
+- *Only =message= updates arrive.* Delivery is narrowed to =["message"]=, so
+  edited messages and inline-button taps won't fire the trigger.
+
+** Local testing needs a public HTTPS tunnel
+
+Telegram's =setWebhook= rejects =localhost= -- it needs a public HTTPS URL. For
+local dev, tunnel to *guildcore* (port 5001, /not/ the frontend) with ngrok:
+
+#+begin_src sh
+ngrok http 5001
+#+end_src
+
+Point =WEBHOOK_URL= at the tunnel and restart the dev servers. Config reads
+=QUART_=-prefixed env vars, so add to =python/.env= (quote it):
+
+#+begin_src sh
+QUART_WEBHOOK_URL="https://<id>.ngrok-free.app"
+#+end_src
+
+#+begin_src sh
+./scripts/stop-dev-servers.sh && ./scripts/start-dev-servers.sh --daemon
+#+end_src
+
+Then enable the webhook trigger in a workspace and message your bot. Telegram
+=POST=s the update to ngrok, guildcore validates the
+=X-Telegram-Bot-Api-Secret-Token= header, persists it, and fires your agent.
+
+Verify the registration any time with:
+
+#+begin_src sh
+curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
+#+end_src
+
+A populated =last_error_message= is Telegram telling you a delivery failed
+(wrong URL, or a secret mismatch). ngrok's inspector at =http://localhost:4040=
+shows every inbound =POST= and can replay it. Note that free ngrok URLs change
+on restart -- you'll need to update =QUART_WEBHOOK_URL= and re-register
+(re-enable the trigger).
+
+* The send-only shortcut: a notify-me agent
+
+The most common real use case isn't an echo bot -- it's an agent that watches
+for some event and pings you on Telegram. That agent never needs the webhook or
+=getUpdates= on the hot path. Instead:
+
+1. Do the one-time human setup: create the bot (Part 1), connect the token
+   (Part 2), and message the bot once so the chat exists.
+2. Find your =chat_id= once (Part 1).
+3. Have the agent take =chat_id= as an *explicit input* and call
+   =telegram_send_message= whenever the event fires.
+
+Taking =chat_id= as an input -- rather than rediscovering it via =getUpdates=
+every run -- keeps the notify path a single call and avoids the
+discovery-is-empty-until-the-human-messages trap. Reach for =telegram_get_me=
+only when you need the bot's =@username= (e.g. to tell the user "message
+=@my_bot= to begin") or to sanity-check the token.
+
+* Recap
+
+| Where    | Step                                                              |
+|----------+-------------------------------------------------------------------|
+| Telegram | =/newbot= via =@BotFather=; copy the token; message the bot once. |
+| Guild    | =guild integration connect guildai~telegram --owner you --token=. |
+| Agent    | =guild agent init=; depend on =@guildai-services/guildai~telegram=;|
+|          | =pick= the tools; call =task.tools.telegram_send_message=.        |
+| Receive  | =guild agent test= by hand, or enable a webhook trigger to have   |
+|          | Telegram push inbound messages automatically.                     |
+
+The single thing to remember through all of it: the bot can't speak until it's
+been spoken to. Receive first, then send.
+
+#+HTML_HEAD: <link rel="stylesheet" href="plain.css">
+#+OPTIONS: toc:nil
+#+OPTIONS: num:nil
+#+OPTIONS: ':t
+#+OPTIONS: html-postamble:nil
+#+STARTUP: noadapt
+# Local Variables:
+# org-adapt-indentation: nil
+# org-export-use-babel: t
+# End:
